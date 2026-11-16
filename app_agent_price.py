@@ -34,6 +34,15 @@ st.markdown("""
         text-align: center;
         margin-bottom: 12px;
     }
+    .price-card-dealer {
+        background: linear-gradient(135deg, #0F766E 0%, #14B8A6 100%);
+        color: white;
+        padding: 20px;
+        border-radius: 12px;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        text-align: center;
+        margin-bottom: 12px;
+    }
     .price-card-consumer {
         background: linear-gradient(135deg, #4338CA 0%, #6366F1 100%);
         color: white;
@@ -100,7 +109,7 @@ if not st.session_state.authenticated:
 col_head, col_logout = st.columns([5, 1])
 with col_head:
     st.markdown("<div class='main-title'>🔍 부품 판가 실시간 검색</div>", unsafe_allow_html=True)
-    st.markdown("<div class='sub-title'>자재번호 또는 품명을 입력하여 우수지정점 판가 및 소비자가를 확인하세요.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sub-title'>자재번호 또는 품명을 입력하여 우수지정점 판가, 지정점 판가 및 소비자가를 확인하세요.</div>", unsafe_allow_html=True)
 with col_logout:
     if st.button("로그아웃", use_container_width=True):
         st.session_state.authenticated = False
@@ -130,11 +139,15 @@ def search_price(query, limit=50):
         return []
     
     cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(price_master)")
+    cols = {row[1] for row in cursor.fetchall()}
+    dealer_expr = "price_dealer" if "price_dealer" in cols else "NULL AS price_dealer"
+
     # 1. 숫자만 있는 경우: 자재번호 검색
     if query.isdigit():
         # 완전 일치 우선
-        cursor.execute("""
-            SELECT material_code, material_name, price_partner, price_consumer
+        cursor.execute(f"""
+            SELECT material_code, material_name, price_partner, {dealer_expr}, price_consumer
             FROM price_master
             WHERE material_code = ?
         """, (query,))
@@ -143,8 +156,8 @@ def search_price(query, limit=50):
             return exact_match
         
         # 앞자리 또는 부분 일치
-        cursor.execute("""
-            SELECT material_code, material_name, price_partner, price_consumer
+        cursor.execute(f"""
+            SELECT material_code, material_name, price_partner, {dealer_expr}, price_consumer
             FROM price_master
             WHERE material_code LIKE ?
             LIMIT ?
@@ -160,7 +173,7 @@ def search_price(query, limit=50):
         params.append(f"%{kw}%")
     
     sql = f"""
-        SELECT material_code, material_name, price_partner, price_consumer
+        SELECT material_code, material_name, price_partner, {dealer_expr}, price_consumer
         FROM price_master
         WHERE {' AND '.join(conditions)}
         LIMIT ?
@@ -177,15 +190,16 @@ if search_query:
     elif len(results) == 1:
         # 단일 품목 조회 시: 대형 카드 뷰
         item = results[0]
-        code, name, partner_price, consumer_price = item
+        code, name, partner_price, dealer_price, consumer_price = item
         
         partner_str = f"{partner_price:,.0f}원" if partner_price is not None else "판가 미등록"
+        dealer_str = f"{dealer_price:,.0f}원" if dealer_price is not None else "판가 미등록"
         consumer_str = f"{consumer_price:,.0f}원" if consumer_price is not None else "판가 미등록"
 
         st.success(f"검색 성공: 자재번호 [{code}]")
         st.markdown(f"**품명(규격):** {name}")
 
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns(3)
         with c1:
             st.markdown(f"""
             <div class="price-card-partner">
@@ -195,6 +209,13 @@ if search_query:
             """, unsafe_allow_html=True)
         with c2:
             st.markdown(f"""
+            <div class="price-card-dealer">
+                <div class="card-label">지정점 판가</div>
+                <div class="card-value">{dealer_str}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with c3:
+            st.markdown(f"""
             <div class="price-card-consumer">
                 <div class="card-label">소비자가 (국내)</div>
                 <div class="card-value">{consumer_str}</div>
@@ -202,7 +223,7 @@ if search_query:
             """, unsafe_allow_html=True)
 
         # 복사 편의 텍스트 영역
-        copy_text = f"자재번호: {code} | 품명: {name} | 우수지정점가: {partner_str} | 소비자가: {consumer_str}"
+        copy_text = f"자재번호: {code} | 품명: {name} | 우수지정점가: {partner_str} | 지정점가: {dealer_str} | 소비자가: {consumer_str}"
         st.text_input("복사용 텍스트 (클릭 후 Ctrl+C)", value=copy_text, label_visibility="collapsed")
 
     else:
@@ -210,10 +231,11 @@ if search_query:
         st.info(f"총 **{len(results)}건**의 부품이 검색되었습니다. (최대 50건 표시)")
 
         # DataFrame 변환
-        df = pd.DataFrame(results, columns=["자재번호", "품명(규격)", "우수지정점 판가", "소비자가(국내)"])
+        df = pd.DataFrame(results, columns=["자재번호", "품명(규격)", "우수지정점 판가", "지정점 판가", "소비자가(국내)"])
         
         # 포맷팅
         df["우수지정점 판가"] = df["우수지정점 판가"].apply(lambda x: f"{x:,.0f}원" if pd.notnull(x) else "-")
+        df["지정점 판가"] = df["지정점 판가"].apply(lambda x: f"{x:,.0f}원" if pd.notnull(x) else "-")
         df["소비자가(국내)"] = df["소비자가(국내)"].apply(lambda x: f"{x:,.0f}원" if pd.notnull(x) else "-")
 
         # 테이블 표시
@@ -225,6 +247,7 @@ if search_query:
                 "자재번호": st.column_config.TextColumn("자재번호", width="medium"),
                 "품명(규격)": st.column_config.TextColumn("품명(규격)", width="large"),
                 "우수지정점 판가": st.column_config.TextColumn("우수지정점 판가", width="medium"),
+                "지정점 판가": st.column_config.TextColumn("지정점 판가", width="medium"),
                 "소비자가(국내)": st.column_config.TextColumn("소비자가(국내)", width="medium"),
             }
         )
@@ -236,7 +259,7 @@ if search_query:
             code_only = selected_code.split(" - ")[0]
             matched = df[df["자재번호"] == code_only].iloc[0]
             
-            c1, c2 = st.columns(2)
+            c1, c2, c3 = st.columns(3)
             with c1:
                 st.markdown(f"""
                 <div class="price-card-partner">
@@ -245,6 +268,13 @@ if search_query:
                 </div>
                 """, unsafe_allow_html=True)
             with c2:
+                st.markdown(f"""
+                <div class="price-card-dealer">
+                    <div class="card-label">지정점 판가</div>
+                    <div class="card-value">{matched['지정점 판가']}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with c3:
                 st.markdown(f"""
                 <div class="price-card-consumer">
                     <div class="card-label">소비자가 (국내)</div>
@@ -258,6 +288,6 @@ else:
     ### 💡 검색 도움말
     - **자재번호 검색**: `20020558`과 같이 자재번호 숫자만 입력하시면 바로 조회됩니다.
     - **품명 검색**: `CP FIXING`, `DIE 250E` 등 부품명에 포함된 단어를 띄어쓰기로 입력하시면 해당 단어가 모두 포함된 부품을 찾아줍니다.
-    - **보안 안내**: 본 시스템은 지정점/에이전트 권한에 맞추어 **우수지정점 판가** 및 **소비자가(국내)**만 제공합니다.
+    - **보안 안내**: 본 시스템은 지정점/에이전트 권한에 맞추어 **우수지정점 판가**, **지정점 판가** 및 **소비자가(국내)**만 제공합니다.
     """)
 
